@@ -59,12 +59,20 @@ class GatewayMesh:
         raise NotImplemented
 
     def mesh_start(self):
-        self.mesh_params = [
-            {'did': device['did'], 'siid': 2, 'piid': 1}
-            for device in self.devices.values()
-            # cannot get state of mesh group
-            if device['type'] == 'mesh' and 'childs' not in device
-        ]
+        params = []
+        for device in self.devices.values():
+            if device['type'] == 'mesh' and 'childs' not in device:
+                model = device['model']
+                if model in bluetooth.BLE_SWITCH_DEVICES_PROPS.keys():
+                    prop = bluetooth.BLE_SWITCH_DEVICES_PROPS[model][0]
+                    params.append({
+                        'did': device['did'],
+                        'siid': prop[0],
+                        'piid': prop[1]
+                    })
+                else:
+                    params.append({'did': device['did'], 'siid': 2, 'piid': 1})
+        self.mesh_params = params
 
         if self.mesh_params:
             self.mesh_ts = time.time() + 30
@@ -81,20 +89,27 @@ class GatewayMesh:
             try:
                 resp = self.miio.send_bulk('get_properties', self.mesh_params)
                 if resp:
-                    # get turn on bulbs
-                    params = [
-                        {'did': item['did'], 'siid': 2, 'piid': 2}
-                        for item in resp if item.get('value')
-                    ]
+                    params = []
+                    for item in resp:
+                        if item.get('value'):
+                            model = self.devices.get(item['did']).get('model')
+                            switch_props = bluetooth.BLE_SWITCH_DEVICES_PROPS.get(model)
+                            if switch_props:
+                                params += [
+                                    {
+                                        'did': item['did'],
+                                        'siid': prop[0],
+                                        'piid': prop[1]
+                                    } for prop in switch_props if prop != switch_props[0]]
+                            else:
+                                params += [
+                                    {'did': item['did'], 'siid': 2, 'piid': 2},
+                                    {'did': item['did'], 'siid': 2, 'piid': 3}
+                                ]
 
-                    if params:
-                        params += [
-                            {'did': item['did'], 'siid': 2, 'piid': 3}
-                            for item in params
-                        ]
-                        resp2 = self.miio.send_bulk('get_properties', params)
-                        if resp2:
-                            resp += resp2
+                    resp2 = self.miio.send_bulk('get_properties', params)
+                    if resp2:
+                        resp += resp2
 
                     self.debug(f"Pull Mesh {resp}")
                     self.process_mesh_data(resp)
@@ -108,6 +123,11 @@ class GatewayMesh:
             self.mesh_ts = time.time() + 30
 
     def process_mesh_data(self, data: list):
+        for msg in data:
+            device = self.devices[msg['did']]
+            if device:
+                msg['model'] = device['model']
+
         data = bluetooth.parse_xiaomi_mesh(data)
         for did, payload in data.items():
             if did in self.updates:
@@ -116,6 +136,10 @@ class GatewayMesh:
 
     def send_mesh(self, device: dict, data: dict):
         did = device['did']
+
+        if device['model'] in bluetooth.BLE_SWITCH_DEVICES_PROPS.keys():
+            data['is_switch'] = True
+
         payload = bluetooth.pack_xiaomi_mesh(did, data)
         try:
             # 2 seconds are selected experimentally
@@ -243,7 +267,7 @@ class GatewayStats:
             m3 = re.findall(r'\(>\)([A-F0-9]{16})', raw)
 
             raw = self.z3buffer["plugin concentrator print-table"]
-            m4 = re.findall(r': ([A-F0-9x> -]{16,}) -> 0x0000', raw)
+            m4 = re.findall(r': (.{16,}) -> 0x0000', raw)
             m4 = [i.replace('0x', '').split(' -> ') for i in m4]
             m4 = {i[0]: i[1:] for i in m4}
 
@@ -296,11 +320,12 @@ class Gateway3(Thread, GatewayV, GatewayMesh, GatewayStats):
         self.mqtt.on_connect = self.on_connect
         self.mqtt.on_disconnect = self.on_disconnect
         self.mqtt.on_message = self.on_message
+        self.mqtt.connect_async(host)
 
         self._ble = options.get('ble')  # for fast access
         self._debug = options.get('debug', '')  # for fast access
         self.parent_scan_interval = options.get('parent', -1)
-        self.default_devices = config['devices'] if config else None
+        self.default_devices = config['devices']
 
         self.devices = {}
         self.updates = {}
@@ -332,8 +357,6 @@ class Gateway3(Thread, GatewayV, GatewayMesh, GatewayStats):
     def run(self):
         """Main thread loop."""
         self.debug("Start main thread")
-
-        self.mqtt.connect_async(self.host)
 
         self.enabled = True
         while self.enabled:
@@ -708,7 +731,8 @@ class Gateway3(Thread, GatewayV, GatewayMesh, GatewayStats):
                     self.setups[domain](self, device, attr)
 
             elif device['type'] == 'mesh':
-                desc = bluetooth.get_device(device['model'], 'Mesh')
+                model = device['model']
+                desc = bluetooth.get_device(model, 'Mesh')
                 device.update(desc)
 
                 self.debug(f"Setup Mesh device {device}")
@@ -723,10 +747,17 @@ class Gateway3(Thread, GatewayV, GatewayMesh, GatewayStats):
                 self.devices[device['did']] = device
 
                 # wait domain init
-                while 'light' not in self.setups:
+                domain = 'switch' if model in bluetooth.BLE_SWITCH_DEVICES_PROPS.keys() else 'light'
+                while domain not in self.setups:
                     time.sleep(1)
 
-                self.setups['light'](self, device, 'light')
+                if domain == 'switch':
+                    for prop in bluetooth.BLE_SWITCH_DEVICES_PROPS[model]:
+                        switch_device = {'mesh_prop': prop}
+                        switch_device.update(device)
+                        self.setups[domain](self, switch_device, domain)
+                else:
+                    self.setups[domain](self, device, domain)
 
             elif device['type'] == 'ble':
                 # only save info for future
@@ -798,12 +829,10 @@ class Gateway3(Thread, GatewayV, GatewayMesh, GatewayStats):
 
             # https://github.com/Koenkk/zigbee2mqtt/issues/798
             # https://www.maero.dk/aqara-temperature-humidity-pressure-sensor-teardown/
-            if prop == 'temperature':
-                if -4000 < param['value'] < 12500:
-                    payload[prop] = param['value'] / 100.0
-            elif prop == 'humidity':
-                if 0 <= param['value'] <= 10000:
-                    payload[prop] = param['value'] / 100.0
+            if prop == 'temperature' and -4000 < param['value'] < 12500:
+                payload[prop] = param['value'] / 100.0
+            elif prop == 'humidity' and 0 <= param['value'] <= 10000:
+                payload[prop] = param['value'] / 100.0
             elif prop == 'pressure':
                 payload[prop] = param['value'] / 100.0
             elif prop == 'battery' and param['value'] > 1000:

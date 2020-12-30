@@ -243,6 +243,7 @@ DEVICES = [{
 }, {
     # motion sensor
     'lumi.sensor_motion': ["Xiaomi", "Motion Sensor", "RTCGQ01LM"],
+    'lumi.motion.agl04': ["Aqara", "Precision Motion Sensor", "RTCGQ13LM"],
     'params': [
         ['3.1.85', None, 'motion', 'binary_sensor'],
         ['8.0.2001', 'battery', 'battery', 'sensor'],
@@ -337,18 +338,12 @@ DEVICES = [{
         ['13.1.85', None, 'channels', 'sensor']
     ]
 }, {
-    # no N, https://www.aqara.com/en/single_switch_T1_no-neutral.html
-    'lumi.switch.l0agl1': ["Aqara", "Relay T1", "SSM-U02"],
+    # without N
+    'lumi.switch.l0agl1': ["Aqara", "Relay T1", "DLKZMK12LM"],
+    # with N, SSM-U01?
+    'lumi.switch.n0agl1': ["Aqara", "Relay T1"],
     'mi_spec': [
         ['2.1', '2.1', 'switch', 'switch'],
-    ]
-}, {
-    # with N, https://www.aqara.com/en/single_switch_T1_with-neutral.html
-    'lumi.switch.n0agl1': ["Aqara", "Relay T1", "SSM-U01"],
-    'mi_spec': [
-        ['2.1', '2.1', 'switch', 'switch'],
-        ['3.2', '3.2', 'power', 'sensor'],
-        # ['5.7', '5.7', 'voltage', 'sensor'],
     ]
 }, {
     'lumi.motion.agl04': ["Aqara", "Precision Motion Sensor", "RTCGQ13LM"],
